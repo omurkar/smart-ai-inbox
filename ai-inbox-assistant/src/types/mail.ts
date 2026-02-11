@@ -1,22 +1,22 @@
 export type EmailPriority = 'high' | 'medium' | 'low'
-export type EmailFilter = EmailPriority | 'all'
+// Added 'archived' to the allowed filters
+export type EmailFilter = 'all' | EmailPriority | 'archived'
 export type ReplyTone = 'professional' | 'friendly' | 'short'
 
-export type EmailListItem = {
+export interface EmailListItem {
   id: string
-  threadId?: string
-  from: string
   subject: string
+  from: string
   date: string
-  snippet?: string
+  snippet: string
 }
 
-export type EmailDetail = EmailListItem & {
+export interface EmailDetail extends EmailListItem {
   bodyText: string
+  htmlBody?: string
 }
 
-export type EmailAnalysis = {
+export interface EmailAnalysis {
   priority: EmailPriority
   summary: string
 }
-

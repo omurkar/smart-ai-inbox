@@ -13,10 +13,28 @@ const port = Number(process.env.PORT ?? 8787)
 
 function heuristicPriority(text: string): Priority {
   const t = text.toLowerCase()
-  const highSignals = ['urgent', 'asap', 'today', 'eod', 'past due', 'overdue', 'invoice', 'payment', 'action required']
-  const medSignals = ['meeting', 'schedule', 'calendar', 'update', 'review', 'follow up', 'proposal']
+  
+  // Expanded with modern high-priority and critical business keywords
+  const highSignals = [
+    'urgent', 'asap', 'today', 'eod', 'past due', 'overdue', 
+    'invoice', 'payment', 'action required', 'critical', 
+    'emergency', 'deadline', 'immediate', 'important', 
+    'escalation', 'failed', 'error', 'alert', 'attention',
+    'blocked', 'issue'
+  ]
+  
+  // Expanded with standard collaboration and workflow keywords
+  const medSignals = [
+    'meeting', 'schedule', 'calendar', 'update', 'review', 
+    'follow up', 'proposal', 'feedback', 'question', 'reminder', 
+    'discuss', 'opportunity', 'invitation', 'status', 'request',
+    'sync', 'check-in'
+  ]
+  
   if (highSignals.some((s) => t.includes(s))) return 'high'
   if (medSignals.some((s) => t.includes(s))) return 'medium'
+  
+  // If no high or medium keywords are found, it defaults to low
   return 'low'
 }
 
@@ -169,4 +187,3 @@ app.listen(port, () => {
   // eslint-disable-next-line no-console
   console.log(`[api] listening on http://localhost:${port}`)
 })
-

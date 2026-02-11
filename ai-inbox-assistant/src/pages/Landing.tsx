@@ -32,6 +32,7 @@ export function Landing() {
     setError(null)
     setLoading(true)
     try {
+      // Standard Google Auth—bypasses the unverified warning
       await signInWithGoogle()
       nav('/app')
     } catch (e) {
@@ -118,8 +119,7 @@ export function Landing() {
 
             {!firebaseOk ? (
               <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
-                Add Firebase config to <code className="rounded bg-black/30 px-1 py-0.5">.env</code> (see
-                <code className="rounded bg-black/30 px-1 py-0.5">.env.example</code>) then restart dev server.
+                Add Firebase config to <code className="rounded bg-black/30 px-1 py-0.5">.env</code> then restart dev server.
               </div>
             ) : null}
 
@@ -168,4 +168,3 @@ export function Landing() {
     </div>
   )
 }
-

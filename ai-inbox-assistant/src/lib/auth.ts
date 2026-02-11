@@ -2,9 +2,9 @@ import type { User } from 'firebase/auth'
 import {
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
-  reauthenticateWithPopup,
   signInWithEmailAndPassword,
   signInWithPopup,
+  reauthenticateWithPopup,
   signOut,
 } from 'firebase/auth'
 import { auth } from './firebase'
@@ -33,6 +33,9 @@ export async function connectGmail(user: User) {
   const provider = new GoogleAuthProvider()
   provider.addScope('https://www.googleapis.com/auth/gmail.readonly')
   provider.addScope('https://www.googleapis.com/auth/gmail.send')
+  // NEW: This scope is explicitly required to archive emails (modify labels)
+  provider.addScope('https://www.googleapis.com/auth/gmail.modify')
+  provider.setCustomParameters({ prompt: 'consent' })
 
   const res = await reauthenticateWithPopup(user, provider)
   const cred = GoogleAuthProvider.credentialFromResult(res)
@@ -42,4 +45,3 @@ export async function connectGmail(user: User) {
   }
   return accessToken
 }
-
