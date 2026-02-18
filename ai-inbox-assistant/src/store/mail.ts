@@ -1,6 +1,15 @@
 import { create } from 'zustand'
 import type { EmailAnalysis, EmailDetail, EmailFilter, EmailListItem, ReplyTone } from '../types/mail'
 
+// NEW: Definition for the internal Shadow Calendar events
+export interface ShadowEvent {
+  id: string
+  emailId: string
+  title: string
+  date: string
+  description: string
+}
+
 type MailState = {
   filter: EmailFilter
   emails: Array<EmailListItem>
@@ -11,13 +20,15 @@ type MailState = {
   replyDraftById: Record<string, { tone: ReplyTone; draft: string } | undefined>
   
   archivedIds: string[]
+  
+  // NEW: State to store locally saved calendar events
+  shadowEvents: ShadowEvent[]
 
   syncing: boolean
   error: string | null
 
   setFilter: (filter: EmailFilter) => void
   setEmails: (emails: Array<EmailListItem>) => void
-  // NEW: Safely append new batches to the list
   appendEmails: (emails: Array<EmailListItem>) => void
   select: (id: string | null) => void
   upsertDetail: (detail: EmailDetail) => void
@@ -26,6 +37,9 @@ type MailState = {
   setSyncing: (syncing: boolean) => void
   setError: (error: string | null) => void
   archiveLocalEmail: (id: string) => void
+  
+  // NEW: Action to save a suggested event to the local calendar
+  addShadowEvent: (event: ShadowEvent) => void
 }
 
 export const useMailStore = create<MailState>((set) => ({
@@ -37,6 +51,9 @@ export const useMailStore = create<MailState>((set) => ({
   analysisById: {},
   replyDraftById: {},
   archivedIds: [],
+  
+  // NEW: Initial state for local events
+  shadowEvents: [],
 
   syncing: false,
   error: null,
@@ -44,7 +61,6 @@ export const useMailStore = create<MailState>((set) => ({
   setFilter: (filter) => set({ filter }),
   setEmails: (emails) => set({ emails }),
   
-  // Appends new emails, making sure we don't accidentally add duplicates
   appendEmails: (newEmails) => set((s) => {
     const existingIds = new Set(s.emails.map(e => e.id))
     const uniqueNew = newEmails.filter(e => !existingIds.has(e.id))
@@ -65,4 +81,9 @@ export const useMailStore = create<MailState>((set) => ({
       archivedIds: [...s.archivedIds, id],
       selectedId: s.selectedId === id ? null : s.selectedId,
     })),
+    
+  // NEW: Implementation to append a new event to the internal list
+  addShadowEvent: (event) => set((s) => ({ 
+    shadowEvents: [...s.shadowEvents, event] 
+  })),
 }))

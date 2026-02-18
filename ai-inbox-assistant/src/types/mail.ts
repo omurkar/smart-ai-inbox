@@ -19,4 +19,11 @@ export interface EmailDetail extends EmailListItem {
 export interface EmailAnalysis {
   priority: EmailPriority
   summary: string
+  // NEW: Added suggested event field for Shadow Calendar integration
+  suggestedEvent?: {
+    title: string
+    date: string // ISO string or human-readable format
+    startTime?: string
+    description: string
+  }
 }

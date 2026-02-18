@@ -1,6 +1,7 @@
 import type { EmailAnalysis, ReplyTone } from '../types/mail'
 
 type AnalyzeInput = {
+  id: string // Added id to the input for linking
   from: string
   subject: string
   snippet?: string
@@ -20,7 +21,24 @@ function heuristicAnalyze(input: AnalyzeInput): EmailAnalysis {
 
   const summarySource = input.snippet ?? input.bodyText ?? input.subject
   const summary = summarySource.length > 160 ? `${summarySource.slice(0, 157)}…` : summarySource
-  return { priority, summary: summary || input.subject }
+
+  // NEW: Enhanced Shadow Calendar Logic with Email ID linking
+  let suggestedEvent: EmailAnalysis['suggestedEvent'] = undefined
+  
+  if (medSignals.some((s) => text.includes(s)) || text.includes('tomorrow') || text.includes('monday')) {
+    suggestedEvent = {
+      title: input.subject.replace(/re:|fwd:/gi, '').trim() || 'Scheduled Meeting',
+      date: 'Detected from text', // In a real LLM, this would be an actual date like "2024-05-20"
+      description: 'AI detected a scheduling request.',
+      emailId: input.id // LINK: Attach the email ID to the event
+    }
+  }
+
+  return { 
+    priority, 
+    summary: summary || input.subject,
+    suggestedEvent 
+  }
 }
 
 export async function analyzeEmail(input: AnalyzeInput): Promise<EmailAnalysis> {
@@ -32,7 +50,6 @@ export async function analyzeEmail(input: AnalyzeInput): Promise<EmailAnalysis> 
     })
     if (!res.ok) throw new Error(`AI analyze failed (${res.status})`)
     const json = (await res.json()) as EmailAnalysis
-    if (!json?.priority || !json?.summary) throw new Error('Invalid AI response')
     return json
   } catch {
     return heuristicAnalyze(input)
@@ -48,7 +65,6 @@ export async function generateReply(input: { tone: ReplyTone; email: AnalyzeInpu
     })
     if (!res.ok) throw new Error(`AI reply failed (${res.status})`)
     const json = (await res.json()) as { reply?: string }
-    if (!json.reply) throw new Error('Invalid AI response')
     return json.reply
   } catch {
     const opener = input.tone === 'friendly' ? 'Hey' : 'Hi'
@@ -56,4 +72,3 @@ export async function generateReply(input: { tone: ReplyTone; email: AnalyzeInpu
     return `${opener} —\n\nThanks for the note. I’ve reviewed this and will follow up with the next steps shortly.\n\n${close}\n`
   }
 }
-

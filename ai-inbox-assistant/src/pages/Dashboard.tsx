@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom' 
 import { Button } from '../components/Button'
 import { Logo } from '../components/Logo'
@@ -10,7 +10,7 @@ import { analyzeEmail, generateReply } from '../lib/ai'
 import { getEmailDetail, listInbox, sendReply, archiveEmail } from '../lib/gmail'
 import type { EmailFilter, ReplyTone, EmailListItem } from '../types/mail'
 import { cn } from '../lib/utils'
-import { Inbox, LogOut, RefreshCw, Send, Sparkles, Reply, X, Search, Archive, PieChart } from 'lucide-react' 
+import { Inbox, LogOut, RefreshCw, Send, Sparkles, Reply, X, Search, Archive, PieChart, Calendar, Plus, ExternalLink } from 'lucide-react' 
 
 function extractEmailAddress(from: string) {
   const m = from.match(/<([^>]+)>/)
@@ -34,7 +34,7 @@ export function Dashboard() {
     error,
     setFilter,
     setEmails,
-    appendEmails, // NEW: Grab the append function
+    appendEmails,
     select,
     upsertDetail,
     upsertAnalysis,
@@ -42,6 +42,8 @@ export function Dashboard() {
     setSyncing,
     setError,
     archiveLocalEmail,
+    addShadowEvent,
+    shadowEvents,
   } = useMailStore()
 
   const [tone, setTone] = useState<ReplyTone>('professional')
@@ -52,12 +54,51 @@ export function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('')
   const [archiving, setArchiving] = useState(false)
 
-  useEffect(() => {
-    if (gmailAccessToken && emails.length === 0 && !syncing) {
-      onSyncInbox(gmailAccessToken)
+  // NEW: Ref to strictly control cancelling the sync loop
+  const abortSyncRef = useRef(false)
+
+  // FIX: Moved these declarations ABOVE the useEffect so they are initialized first
+  const selectedDetail = selectedId ? detailsById[selectedId] : undefined
+  const selectedAnalysis = selectedId ? analysisById[selectedId] : undefined
+  const selectedDraft = selectedId ? replyDraftById[selectedId] : undefined
+
+  // STOP SYNC LOGIC
+  const stopSync = () => {
+    if (window.confirm("Do you want to stop the sync process?")) {
+      abortSyncRef.current = true;
+      setSyncing(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gmailAccessToken])
+  }
+
+  // AUTO-MARKING LOGIC (Fallback): Save event as soon as it's analyzed and selected
+  useEffect(() => {
+    if (selectedAnalysis?.suggestedEvent && selectedId) {
+      const alreadyExists = shadowEvents.some(e => e.emailId === selectedId)
+      if (!alreadyExists) {
+        addShadowEvent({
+          id: Math.random().toString(36).substr(2, 9),
+          emailId: selectedId,
+          title: selectedAnalysis.suggestedEvent.title,
+          date: selectedAnalysis.suggestedEvent.date,
+          description: selectedAnalysis.suggestedEvent.description,
+        })
+      }
+    }
+  }, [selectedAnalysis, selectedId, addShadowEvent, shadowEvents])
+
+  // REDIRECT LOGIC: Jump to email from calendar
+  const handleCalendarClick = (emailId: string) => {
+    setFilter('all') // Ensure we aren't filtered out
+    onSelect(emailId)
+  }
+
+  // REMOVED AUTO-SYNC ON LOGIN to prevent immediate fetching
+  // useEffect(() => {
+  //   if (gmailAccessToken && emails.length === 0 && !syncing) {
+  //     onSyncInbox(gmailAccessToken)
+  //   }
+  //   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // }, [gmailAccessToken])
 
   const filteredEmails = useMemo(() => {
     let list = emails
@@ -82,10 +123,6 @@ export function Dashboard() {
     return list
   }, [analysisById, emails, filter, searchQuery, archivedIds])
 
-  const selectedDetail = selectedId ? detailsById[selectedId] : undefined
-  const selectedAnalysis = selectedId ? analysisById[selectedId] : undefined
-  const selectedDraft = selectedId ? replyDraftById[selectedId] : undefined
-
   const counts = useMemo(() => {
     let high = 0, medium = 0, low = 0, archived = 0, totalActive = 0
     for (const e of emails) {
@@ -102,8 +139,11 @@ export function Dashboard() {
     return { high, medium, low, archived, totalActive }
   }, [analysisById, emails, archivedIds])
 
+  // NEW BACKGROUND AUTO-MARKING: Analyzes list silently and extracts calendar events immediately
   async function performAutoAnalysis(list: EmailListItem[], token: string) {
     for (const e of list) {
+      if (abortSyncRef.current) break; // Break out immediately if user clicked Stop
+
       const state = useMailStore.getState()
       if (state.analysisById[e.id]) continue
 
@@ -119,12 +159,27 @@ export function Dashboard() {
 
       try {
         const analysis = await analyzeEmail({
+          id: e.id,
           from: e.from,
           subject: e.subject,
           snippet: e.snippet,
           bodyText: detail?.bodyText,
         })
         upsertAnalysis(e.id, analysis)
+
+        // BACKGROUND CALENDAR TAGGING: Save to calendar automatically without clicking
+        if (analysis.suggestedEvent) {
+          const currentEvents = useMailStore.getState().shadowEvents
+          if (!currentEvents.some(evt => evt.emailId === e.id)) {
+            useMailStore.getState().addShadowEvent({
+              id: Math.random().toString(36).substr(2, 9),
+              emailId: e.id,
+              title: analysis.suggestedEvent.title,
+              date: analysis.suggestedEvent.date,
+              description: analysis.suggestedEvent.description,
+            })
+          }
+        }
       } catch (err) {
         console.error('Auto-analysis failed for', e.id, err)
       }
@@ -135,48 +190,44 @@ export function Dashboard() {
     if (!user) return
     setError(null)
     setSyncing(true)
+    abortSyncRef.current = false // Reset abort flag
     try {
       const token = await connectGmail(user)
       setGmailAccessToken(token)
-      
-      // Clear out the old emails before streaming the new ones
       setEmails([])
-      
-      // Stream batches of 10 in real-time
       await listInbox(token, (batch) => {
+        if (abortSyncRef.current) throw new Error('SYNC_ABORTED') // Throw custom error to break loop
         appendEmails(batch)
-        performAutoAnalysis(batch, token) // Instantly analyze this batch
+        performAutoAnalysis(batch, token)
       })
-
     } catch (e) {
+      if (e instanceof Error && e.message === 'SYNC_ABORTED') return; // Ignore silent aborts
       setError(e instanceof Error ? e.message : 'Failed to connect Gmail.')
     } finally {
-      setSyncing(false)
+      if (!abortSyncRef.current) setSyncing(false)
     }
   }
 
   async function onSyncInbox(forceToken?: string) {
     setError(null)
     setSyncing(true)
+    abortSyncRef.current = false // Reset abort flag
     try {
       const tokenToUse = forceToken || gmailAccessToken
       if (!tokenToUse) {
         throw new Error('Please connect your Gmail account to sync.')
       }
-      
-      // Clear out the old emails before streaming the new ones
       setEmails([])
-      
-      // Stream batches of 10 in real-time
       await listInbox(tokenToUse, (batch) => {
+        if (abortSyncRef.current) throw new Error('SYNC_ABORTED') // Throw custom error to break loop
         appendEmails(batch)
-        performAutoAnalysis(batch, tokenToUse) // Instantly analyze this batch
+        performAutoAnalysis(batch, tokenToUse)
       })
-      
     } catch (e) {
+      if (e instanceof Error && e.message === 'SYNC_ABORTED') return; // Ignore silent aborts
       setError(e instanceof Error ? e.message : 'Sync failed.')
     } finally {
-      setSyncing(false)
+      if (!abortSyncRef.current) setSyncing(false)
     }
   }
 
@@ -197,12 +248,27 @@ export function Dashboard() {
       const base = emails.find((x) => x.id === id)
       if (!analysisById[id] && base) {
         const analysis = await analyzeEmail({
+          id: base.id,
           from: base.from,
           subject: base.subject,
           snippet: base.snippet,
           bodyText: detail?.bodyText,
         })
         upsertAnalysis(id, analysis)
+        
+        // CALENDAR TAGGING (Fallback): If an email was missed during sync, tag it when clicked
+        if (analysis.suggestedEvent) {
+          const currentEvents = useMailStore.getState().shadowEvents
+          if (!currentEvents.some(evt => evt.emailId === id)) {
+            useMailStore.getState().addShadowEvent({
+              id: Math.random().toString(36).substr(2, 9),
+              emailId: id,
+              title: analysis.suggestedEvent.title,
+              date: analysis.suggestedEvent.date,
+              description: analysis.suggestedEvent.description,
+            })
+          }
+        }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load email.')
@@ -235,6 +301,7 @@ export function Dashboard() {
       const reply = await generateReply({
         tone,
         email: {
+          id: base.id,
           from: base.from,
           subject: base.subject,
           snippet: base.snippet,
@@ -295,11 +362,21 @@ export function Dashboard() {
           <Logo />
           <div className="flex items-center gap-2">
             <div className="hidden text-xs text-slate-400 sm:block">{user?.email}</div>
-            <Button variant="secondary" size="sm" onClick={() => onSyncInbox()} disabled={syncing}>
-              <RefreshCw className={cn('size-4', syncing && 'animate-spin')} />
-              Sync
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => nav('/stats')}>
+            
+            {/* NEW: Dynamic Sync / Stop Button */}
+            {syncing ? (
+              <Button variant="secondary" size="sm" onClick={stopSync} className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border-rose-500/30">
+                <X className="size-4" />
+                Stop Sync
+              </Button>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={() => onSyncInbox()}>
+                <RefreshCw className="size-4" />
+                Sync
+              </Button>
+            )}
+
+            <Button variant="secondary" size="sm" onClick={() => nav('/stats')} disabled={syncing}>
               <PieChart className="size-4" />
               Show Statistics
             </Button>
@@ -361,7 +438,7 @@ export function Dashboard() {
                 {gmailAccessToken ? 'Reconnect' : 'Connect'}
               </Button>
               {gmailAccessToken ? (
-                <Button variant="ghost" size="sm" onClick={() => setGmailAccessToken(null)}>
+                <Button variant="ghost" size="sm" onClick={() => setGmailAccessToken(null)} disabled={syncing}>
                   Disconnect
                 </Button>
               ) : null}
@@ -372,6 +449,33 @@ export function Dashboard() {
             <div className="font-semibold text-slate-300">Action items</div>
             <div className="mt-1">{counts.high} need action today</div>
           </div>
+
+          {/* NEW: Local Calendar Widget in Sidebar */}
+          <div className="mt-8 shrink-0">
+            <div className="flex items-center gap-2 text-xs font-semibold text-indigo-400 mb-3 uppercase tracking-wider">
+              <Calendar size={14} /> Local Calendar
+            </div>
+            <div className="space-y-2">
+              {shadowEvents.length === 0 ? (
+                <div className="text-[11px] text-slate-500 italic">No meetings detected yet.</div>
+              ) : (
+                shadowEvents.map(evt => (
+                  <button 
+                    key={evt.id}
+                    onClick={() => handleCalendarClick(evt.emailId)}
+                    className="w-full text-left p-2 rounded-xl bg-white/5 border border-white/5 hover:border-indigo-500/30 transition group"
+                  >
+                    <div className="text-xs font-medium text-slate-200 truncate">{evt.title}</div>
+                    <div className="flex items-center justify-between mt-1">
+                       <span className="text-[10px] text-slate-500">{evt.date}</span>
+                       <ExternalLink size={10} className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
         </div>
 
         {/* Column 2: Feed */}
@@ -471,6 +575,26 @@ export function Dashboard() {
                   </Button>
                 )}
               </div>
+
+              {/* NEW: Suggested Event Card (Shadow Calendar Integration - Auto-Saved) */}
+              {selectedAnalysis?.suggestedEvent && (
+                <div className="shrink-0 rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-3 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="size-4 text-indigo-400" />
+                      <div className="text-xs font-semibold text-indigo-100">Suggested Event</div>
+                    </div>
+                    <div className="h-6 px-2 text-[10px] font-bold flex items-center text-indigo-300 bg-indigo-500/20 rounded">
+                      Auto-Saved
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[13px] text-indigo-200/90 leading-snug">
+                    <span className="font-semibold text-white">{selectedAnalysis.suggestedEvent.title}</span>
+                    <span className="mx-2 opacity-50">•</span>
+                    <span>{selectedAnalysis.suggestedEvent.date}</span>
+                  </div>
+                </div>
+              )}
 
               <div className="shrink-0 rounded-2xl border border-white/10 bg-black/20 p-3">
                 <div className="text-xs font-semibold text-slate-200">AI Summary</div>

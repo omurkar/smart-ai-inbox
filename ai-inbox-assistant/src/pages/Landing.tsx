@@ -58,17 +58,18 @@ export function Landing() {
   }
 
   return (
-    <div className="relative min-h-full overflow-hidden">
+    <div className="fixed inset-0 h-screen w-screen overflow-hidden bg-slate-950 flex items-center justify-center">
+      {/* Background decorative elements */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -top-40 left-1/2 h-[520px] w-[920px] -translate-x-1/2 rounded-full bg-indigo-600/20 blur-3xl" />
         <div className="absolute -bottom-40 left-1/3 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-fuchsia-500/10 blur-3xl" />
       </div>
 
-      <div className="mx-auto flex min-h-full max-w-6xl items-center px-6 py-14">
+      <div className="relative z-10 mx-auto w-full max-w-6xl px-6">
         <div className="grid w-full gap-10 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
           <div>
             <Logo />
-            <div className="mt-8">
+            <div className="mt-8 text-slate-100">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
                 <Sparkles className="size-4 text-indigo-200" />
                 Tame your inbox with AI
@@ -99,7 +100,7 @@ export function Landing() {
             </div>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-black/30">
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-black/30 text-slate-100">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">{mode === 'signin' ? 'Sign in' : 'Create account'}</div>
