@@ -13,7 +13,7 @@ import type { EmailFilter, ReplyTone, EmailListItem, SuggestedAction } from '../
 import { cn } from '../lib/utils'
 import {
   Inbox, LogOut, RefreshCw, Send, Sparkles, Reply, X, Search, Archive,
-  PieChart, Calendar, ExternalLink, Star, FileText, Plus,
+  PieChart, Calendar, Star, FileText, Plus,
 } from 'lucide-react'
 
 function extractEmailAddress(from: string) {
@@ -103,10 +103,7 @@ export function Dashboard() {
     }
   }, [selectedAnalysis, selectedId, addShadowEvent, shadowEvents])
 
-  const handleCalendarClick = (emailId: string) => {
-    setFilter('all')
-    onSelect(emailId)
-  }
+
 
   const filteredEmails = useMemo(() => {
     let list = Array.isArray(emails) ? [...emails] : []
@@ -558,30 +555,6 @@ export function Dashboard() {
             </div>
           </div>
 
-          <div className="mt-8 shrink-0">
-            <div className="flex items-center gap-2 text-xs font-semibold text-indigo-400 mb-3 uppercase tracking-wider">
-              <Calendar size={14} /> Local Calendar
-            </div>
-            <div className="space-y-2">
-              {(shadowEvents || []).length === 0 ? (
-                <div className="text-[11px] text-slate-500 italic">No meetings detected yet.</div>
-              ) : (
-                (shadowEvents || []).map(evt => (
-                  <button
-                    key={evt.id}
-                    onClick={() => handleCalendarClick(evt.emailId)}
-                    className="w-full text-left p-2 rounded-xl bg-white/5 border border-white/5 hover:border-indigo-500/30 transition group"
-                  >
-                    <div className="text-xs font-medium text-slate-200 truncate">{evt.title}</div>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-[10px] text-slate-500">{evt.date}</span>
-                      <ExternalLink size={10} className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
         </div>
 
         {/* Column 2: Feed */}
@@ -810,13 +783,13 @@ export function Dashboard() {
                     </div>
                     <div className="flex items-center gap-2">
                       <select
-                        className="h-9 rounded-lg border border-white/10 bg-white/5 px-2 text-xs text-slate-100"
+                        className="h-9 rounded-lg border border-white/10 bg-slate-800 px-2 text-xs text-slate-100"
                         value={tone}
                         onChange={(e) => setTone(e.target.value as ReplyTone)}
                       >
-                        <option value="professional">Professional</option>
-                        <option value="friendly">Friendly</option>
-                        <option value="short">Short</option>
+                        <option value="professional" className="bg-slate-800 text-white">Professional</option>
+                        <option value="friendly" className="bg-slate-800 text-white">Friendly</option>
+                        <option value="short" className="bg-slate-800 text-white">Short</option>
                       </select>
                       <Button variant="secondary" size="sm" onClick={onGenerateReply} disabled={generating}>
                         <Sparkles className={cn('size-4', generating && 'animate-pulse')} />

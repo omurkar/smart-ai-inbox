@@ -25,7 +25,7 @@ function App() {
   }, [setAuthLoading, setUser])
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
+    <div className="h-screen w-screen overflow-auto bg-slate-950 text-slate-100">
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route
