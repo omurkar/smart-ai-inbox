@@ -25,5 +25,6 @@ export interface EmailAnalysis {
     date: string // ISO string or human-readable format
     startTime?: string
     description: string
+    emailId?: string // Fix: Added emailId to link to the original email
   }
 }

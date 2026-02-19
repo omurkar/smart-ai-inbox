@@ -26,9 +26,19 @@ function heuristicAnalyze(input: AnalyzeInput): EmailAnalysis {
   let suggestedEvent: EmailAnalysis['suggestedEvent'] = undefined
   
   if (medSignals.some((s) => text.includes(s)) || text.includes('tomorrow') || text.includes('monday')) {
+    
+    // Fix: Generate a valid ISO date string
+    let eventDate = new Date();
+    if (text.includes('tomorrow')) {
+      eventDate.setDate(eventDate.getDate() + 1);
+    } else if (text.includes('monday')) {
+      // Calculate next Monday
+      eventDate.setDate(eventDate.getDate() + ((1 + 7 - eventDate.getDay()) % 7 || 7));
+    }
+
     suggestedEvent = {
       title: input.subject.replace(/re:|fwd:/gi, '').trim() || 'Scheduled Meeting',
-      date: 'Detected from text', // In a real LLM, this would be an actual date like "2024-05-20"
+      date: eventDate.toISOString().split('T')[0], // Use a valid YYYY-MM-DD string
       description: 'AI detected a scheduling request.',
       emailId: input.id // LINK: Attach the email ID to the event
     }
