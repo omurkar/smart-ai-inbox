@@ -8,12 +8,18 @@ import { useMailStore } from '../store/mail'
 import { useSessionStore } from '../store/session'
 import { connectGmail, signOutUser } from '../lib/auth'
 import { analyzeEmail, generateReply } from '../lib/ai'
-import { getEmailDetail, listInbox, sendReply, archiveEmail, toggleStar, createDraft } from '../lib/gmail'
-import type { EmailFilter, ReplyTone, EmailListItem, SuggestedAction } from '../types/mail'
+import {
+  getEmailDetail, listInbox, sendReply, archiveEmail, toggleStar,
+  createDraft, fetchAttachment, scanAttachment, downloadAttachment,
+} from '../lib/gmail'
+import type { AttachmentInfo, ScanResult } from '../lib/gmail'
+import type { EmailFilter, ReplyTone, EmailListItem, SuggestedAction, DateRangeFilter, SortOrder } from '../types/mail'
 import { cn } from '../lib/utils'
 import {
   Inbox, LogOut, RefreshCw, Send, Sparkles, Reply, X, Search, Archive,
-  PieChart, Calendar, Star, FileText, Plus,
+  PieChart, Calendar, Star, FileText, Plus, Paperclip, Download, Shield,
+  ShieldCheck, ShieldAlert, ShieldQuestion, AlertTriangle,
+  ArrowUpDown, Clock, Filter,
 } from 'lucide-react'
 
 function extractEmailAddress(from: string) {
@@ -23,11 +29,52 @@ function extractEmailAddress(from: string) {
   return ''
 }
 
+/** Format byte size to human-readable */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+/** Get icon for file type */
+function getFileIcon(mimeType: string): string {
+  if (mimeType.startsWith('image/')) return '🖼️'
+  if (mimeType.includes('pdf')) return '📄'
+  if (mimeType.includes('word') || mimeType.includes('document')) return '📝'
+  if (mimeType.includes('sheet') || mimeType.includes('excel')) return '📊'
+  if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return '📊'
+  if (mimeType.includes('zip') || mimeType.includes('rar') || mimeType.includes('tar') || mimeType.includes('7z')) return '📦'
+  if (mimeType.includes('audio')) return '🎵'
+  if (mimeType.includes('video')) return '🎬'
+  if (mimeType.includes('text')) return '📃'
+  return '📎'
+}
+
+/** Check if a date falls within a date range filter */
+function isWithinDateRange(dateStr: string, range: DateRangeFilter): boolean {
+  if (range === 'all') return true
+  const emailDate = new Date(dateStr).getTime()
+  if (isNaN(emailDate)) return true // can't parse → don't filter out
+  const now = Date.now()
+  const DAY = 86400000
+  switch (range) {
+    case 'today': return now - emailDate < DAY
+    case 'week': return now - emailDate < 7 * DAY
+    case 'month': return now - emailDate < 30 * DAY
+    case '3months': return now - emailDate < 90 * DAY
+    default: return true
+  }
+}
+
 export function Dashboard() {
   const nav = useNavigate()
   const { user, gmailAccessToken, setGmailAccessToken, clearGmailAccessToken } = useSessionStore()
   const {
     filter,
+    dateRange,
+    sortOrder,
     emails = [],
     selectedId,
     detailsById = {},
@@ -37,6 +84,8 @@ export function Dashboard() {
     syncing,
     error,
     setFilter,
+    setDateRange,
+    setSortOrder,
     setEmails,
     appendEmails,
     select,
@@ -59,6 +108,12 @@ export function Dashboard() {
   const [activeLabel, setActiveLabel] = useState<string>('INBOX')
   const [showCompose, setShowCompose] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [showFilters, setShowFilters] = useState(false)
+
+  // Attachment scanning state
+  const [scanResults, setScanResults] = useState<Record<string, ScanResult>>({})
+  const [scanningIds, setScanningIds] = useState<Set<string>>(new Set())
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set())
 
   const abortSyncRef = useRef(false)
 
@@ -103,8 +158,7 @@ export function Dashboard() {
     }
   }, [selectedAnalysis, selectedId, addShadowEvent, shadowEvents])
 
-
-
+  // ─── Filtered + sorted emails ────────────────────────────────
   const filteredEmails = useMemo(() => {
     let list = Array.isArray(emails) ? [...emails] : []
 
@@ -117,6 +171,10 @@ export function Dashboard() {
       }
     }
 
+    // Date range filter
+    list = list.filter((e) => isWithinDateRange(e.date, dateRange))
+
+    // Search
     if (searchQuery.trim() !== '') {
       const q = searchQuery.toLowerCase()
       list = list.filter((e) =>
@@ -124,8 +182,16 @@ export function Dashboard() {
         e.from.toLowerCase().includes(q)
       )
     }
+
+    // Sort: newest first (default) or oldest first
+    list.sort((a, b) => {
+      const da = new Date(a.date).getTime() || 0
+      const db = new Date(b.date).getTime() || 0
+      return sortOrder === 'newest' ? db - da : da - db
+    })
+
     return list
-  }, [analysisById, emails, filter, searchQuery, archivedIds])
+  }, [analysisById, emails, filter, searchQuery, archivedIds, dateRange, sortOrder])
 
   const counts = useMemo(() => {
     let high = 0, medium = 0, low = 0, archived = 0, totalActive = 0
@@ -295,8 +361,75 @@ export function Dashboard() {
           }
         }
       }
+
+      // Auto-scan attachments when email is selected
+      if (detail?.attachments && detail.attachments.length > 0 && gmailAccessToken) {
+        for (const att of detail.attachments) {
+          const key = `${id}_${att.attachmentId}`
+          if (!scanResults[key] && !scanningIds.has(key)) {
+            handleScanAttachment(id, att)
+          }
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load email.')
+    }
+  }
+
+  // ─── Attachment scanning ─────────────────────────────────────
+  async function handleScanAttachment(emailId: string, att: AttachmentInfo) {
+    const key = `${emailId}_${att.attachmentId}`
+    setScanningIds(prev => new Set(prev).add(key))
+    try {
+      // Fetch the raw data for scanning
+      let base64Data = ''
+      if (gmailAccessToken) {
+        try {
+          base64Data = await fetchAttachment(gmailAccessToken, emailId, att.attachmentId)
+        } catch {
+          // If we can't fetch the data, still do the heuristic scan
+        }
+      }
+      const result = await scanAttachment(att.filename, att.mimeType, base64Data)
+      setScanResults(prev => ({ ...prev, [key]: result }))
+    } catch {
+      setScanResults(prev => ({
+        ...prev,
+        [key]: { status: 'error' as const, message: 'Scan failed' },
+      }))
+    } finally {
+      setScanningIds(prev => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  async function handleDownloadAttachment(emailId: string, att: AttachmentInfo) {
+    if (!gmailAccessToken) return
+    const key = `${emailId}_${att.attachmentId}`
+    const result = scanResults[key]
+
+    // Block download if unsafe
+    if (result?.status === 'unsafe') {
+      setError(`⚠️ This attachment (${att.filename}) has been flagged as unsafe and cannot be downloaded.`)
+      return
+    }
+
+    setDownloadingIds(prev => new Set(prev).add(key))
+    try {
+      const base64Data = await fetchAttachment(gmailAccessToken, emailId, att.attachmentId)
+      downloadAttachment(base64Data, att.filename, att.mimeType)
+      setToastMessage(`Downloaded: ${att.filename}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to download attachment')
+    } finally {
+      setDownloadingIds(prev => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
     }
   }
 
@@ -426,12 +559,70 @@ export function Dashboard() {
     { key: 'archived', label: 'Archived', meta: `${counts.archived}` },
   ]
 
+  const dateRangeOptions: Array<{ key: DateRangeFilter; label: string }> = [
+    { key: 'all', label: 'All Time' },
+    { key: 'today', label: 'Today' },
+    { key: 'week', label: 'This Week' },
+    { key: 'month', label: 'This Month' },
+    { key: '3months', label: '3 Months' },
+  ]
+
   const labelTabs = [
     { id: 'INBOX', label: 'Inbox', icon: Inbox },
     { id: 'SENT', label: 'Sent', icon: Send },
     { id: 'STARRED', label: 'Starred', icon: Star },
     { id: 'DRAFT', label: 'Drafts', icon: FileText },
   ]
+
+  // ─── Attachment scan status badge ────────────────────────────
+  function ScanStatusBadge({ scanResult, scanning }: { scanResult?: ScanResult; scanning: boolean }) {
+    if (scanning) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-medium text-blue-300">
+          <Shield className="size-3 animate-pulse" />
+          Scanning…
+        </span>
+      )
+    }
+    if (!scanResult) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-500/10 border border-slate-500/30 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+          <ShieldQuestion className="size-3" />
+          Not scanned
+        </span>
+      )
+    }
+    switch (scanResult.status) {
+      case 'safe':
+        return (
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+            <ShieldCheck className="size-3" />
+            {scanResult.message}
+          </span>
+        )
+      case 'warning':
+        return (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+            <AlertTriangle className="size-3" />
+            {scanResult.message}
+          </span>
+        )
+      case 'unsafe':
+        return (
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[10px] font-medium text-red-300">
+            <ShieldAlert className="size-3" />
+            {scanResult.message}
+          </span>
+        )
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/10 border border-rose-500/30 px-2 py-0.5 text-[10px] font-medium text-rose-300">
+            <ShieldAlert className="size-3" />
+            Scan error
+          </span>
+        )
+    }
+  }
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -538,10 +729,36 @@ export function Dashboard() {
             ))}
           </div>
 
+          {/* Date Range Filter */}
+          <div className="mt-6 shrink-0">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-semibold flex items-center gap-2">
+                <Clock className="size-4 text-slate-400" />
+                Date Range
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              {dateRangeOptions.map((opt) => (
+                <button
+                  key={opt.key}
+                  className={cn(
+                    'flex w-full items-center rounded-lg border px-3 py-1.5 text-left text-xs transition',
+                    opt.key === dateRange
+                      ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-100'
+                      : 'border-white/10 bg-white/0 text-slate-300 hover:bg-white/5',
+                  )}
+                  onClick={() => setDateRange(opt.key)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="mt-6 shrink-0 rounded-2xl border border-white/10 bg-black/20 p-3">
             <div className="text-xs font-semibold text-slate-200">Gmail</div>
             <div className="mt-1 text-xs text-slate-400">
-              {gmailAccessToken ? 'Connected securely' : 'Not connected'}
+              {gmailAccessToken ? 'Connected securely • Last 3 months synced' : 'Not connected'}
             </div>
             <div className="mt-3 flex gap-2">
               <Button
@@ -574,16 +791,88 @@ export function Dashboard() {
                 }
               </div>
             </div>
-            <div className="relative mt-3">
-              <Search className="absolute left-3 top-2.5 size-4 text-slate-500" />
-              <input
-                type="text"
-                placeholder="Search subjects or senders..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-xl border border-white/10 bg-black/20 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-              />
+
+            {/* Search + Sort/Filter controls */}
+            <div className="mt-3 flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-2.5 size-4 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="Search subjects or senders..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full rounded-xl border border-white/10 bg-black/20 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
+                />
+              </div>
+              {/* Sort toggle */}
+              <button
+                onClick={() => setSortOrder(sortOrder === 'newest' ? 'oldest' : 'newest')}
+                className={cn(
+                  "flex items-center gap-1 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs transition-colors hover:bg-white/5",
+                  sortOrder === 'newest' ? 'text-cyan-300' : 'text-amber-300'
+                )}
+                title={sortOrder === 'newest' ? 'Showing newest first' : 'Showing oldest first'}
+              >
+                <ArrowUpDown className="size-3.5" />
+                {sortOrder === 'newest' ? 'New' : 'Old'}
+              </button>
+              {/* Filter toggle */}
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={cn(
+                  "flex items-center gap-1 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs transition-colors hover:bg-white/5",
+                  showFilters ? 'text-indigo-300 border-indigo-500/30' : 'text-slate-400'
+                )}
+                title="Toggle filters"
+              >
+                <Filter className="size-3.5" />
+              </button>
             </div>
+
+            {/* Expanded filter row */}
+            {showFilters && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-black/30 p-2">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Date:</span>
+                {dateRangeOptions.map((opt) => (
+                  <button
+                    key={opt.key}
+                    className={cn(
+                      'rounded-lg px-2 py-1 text-[11px] transition-colors',
+                      opt.key === dateRange
+                        ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/40'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent',
+                    )}
+                    onClick={() => setDateRange(opt.key)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+                <div className="mx-1 h-4 w-px bg-white/10" />
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Sort:</span>
+                <button
+                  className={cn(
+                    'rounded-lg px-2 py-1 text-[11px] transition-colors',
+                    sortOrder === 'newest'
+                      ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/40'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent',
+                  )}
+                  onClick={() => setSortOrder('newest')}
+                >
+                  Newest First
+                </button>
+                <button
+                  className={cn(
+                    'rounded-lg px-2 py-1 text-[11px] transition-colors',
+                    sortOrder === 'oldest'
+                      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent',
+                  )}
+                  onClick={() => setSortOrder('oldest')}
+                >
+                  Oldest First
+                </button>
+              </div>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto p-2">
             {filteredEmails.length === 0 && !syncing ? (
@@ -595,7 +884,7 @@ export function Dashboard() {
               <div className="p-6 text-center">
                 <div className="inline-flex items-center gap-3 rounded-2xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
                   <RefreshCw className="size-4 text-indigo-400 animate-spin" />
-                  <span className="text-sm text-slate-300">Fetching emails from Gmail…</span>
+                  <span className="text-sm text-slate-300">Fetching recent emails (last 3 months)…</span>
                 </div>
               </div>
             ) : null}
@@ -604,6 +893,7 @@ export function Dashboard() {
               const d = detailsById ? detailsById[e.id] : undefined
               const isSelected = e.id === selectedId
               const isStarred = (d as any)?.labelIds?.includes('STARRED') || (e as any)?.labelIds?.includes('STARRED')
+              const hasAttachments = (e as any)?.hasAttachments || (d as any)?.attachments?.length > 0
 
               return (
                 <button
@@ -618,7 +908,12 @@ export function Dashboard() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-slate-100">{e.subject}</div>
+                      <div className="truncate text-sm font-semibold text-slate-100 flex items-center gap-1.5">
+                        {e.subject}
+                        {hasAttachments && (
+                          <Paperclip className="size-3 text-slate-400 shrink-0" title="Has attachments" />
+                        )}
+                      </div>
                       <div className="truncate text-xs text-slate-400">{e.from}</div>
                     </div>
                     <div className="shrink-0 flex flex-col items-end gap-1">
@@ -743,6 +1038,110 @@ export function Dashboard() {
                   {selectedAnalysis?.summary || selectedDetail.snippet || 'Analyzing…'}
                 </div>
               </div>
+
+              {/* ── Attachments Section ─────────────────────────── */}
+              {selectedDetail.attachments && selectedDetail.attachments.length > 0 && (
+                <div className="shrink-0 rounded-2xl border border-white/10 bg-black/20 p-3">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Paperclip className="size-4 text-slate-400" />
+                    <div className="text-xs font-semibold text-slate-200">
+                      Attachments ({selectedDetail.attachments.length})
+                    </div>
+                    <div className="flex-1" />
+                    <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                      <Shield className="size-3" />
+                      Scanned by Google Safe Browsing
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {selectedDetail.attachments.map((att) => {
+                      const key = `${selectedId}_${att.attachmentId}`
+                      const result = scanResults[key]
+                      const isScanning = scanningIds.has(key)
+                      const isDownloading = downloadingIds.has(key)
+                      const isUnsafe = result?.status === 'unsafe'
+
+                      return (
+                        <div
+                          key={att.attachmentId}
+                          className={cn(
+                            'rounded-xl border p-3 transition-colors',
+                            isUnsafe
+                              ? 'border-red-500/30 bg-red-500/5'
+                              : result?.status === 'warning'
+                                ? 'border-amber-500/30 bg-amber-500/5'
+                                : result?.status === 'safe'
+                                  ? 'border-emerald-500/20 bg-emerald-500/5'
+                                  : 'border-white/10 bg-white/5'
+                          )}
+                        >
+                          <div className="flex items-center gap-3">
+                            {/* File icon */}
+                            <div className="flex size-10 items-center justify-center rounded-lg bg-white/5 border border-white/10 text-lg shrink-0">
+                              {getFileIcon(att.mimeType)}
+                            </div>
+
+                            {/* File info */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-slate-100 truncate">
+                                  {att.filename}
+                                </span>
+                                <span className="text-[10px] text-slate-500 shrink-0">
+                                  {formatBytes(att.size)}
+                                </span>
+                              </div>
+                              <div className="mt-1">
+                                <ScanStatusBadge scanResult={result} scanning={isScanning} />
+                              </div>
+                              {/* Show details for warnings/unsafe */}
+                              {result?.details && (result.status === 'unsafe' || result.status === 'warning') && (
+                                <div className={cn(
+                                  'mt-1.5 text-[11px] leading-tight',
+                                  result.status === 'unsafe' ? 'text-red-300/80' : 'text-amber-300/80'
+                                )}>
+                                  {result.details}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Actions */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {/* Re-scan button */}
+                              <button
+                                onClick={() => handleScanAttachment(selectedId, att as unknown as AttachmentInfo)}
+                                disabled={isScanning}
+                                className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[11px] text-slate-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50"
+                                title="Re-scan attachment"
+                              >
+                                <Shield className={cn('size-3', isScanning && 'animate-spin')} />
+                                Scan
+                              </button>
+
+                              {/* Download button */}
+                              <button
+                                onClick={() => handleDownloadAttachment(selectedId, att as unknown as AttachmentInfo)}
+                                disabled={isDownloading || isUnsafe}
+                                className={cn(
+                                  "flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition-colors disabled:opacity-50",
+                                  isUnsafe
+                                    ? 'border-red-500/30 bg-red-500/10 text-red-400 cursor-not-allowed'
+                                    : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'
+                                )}
+                                title={isUnsafe ? 'Blocked — file is unsafe' : 'Download attachment'}
+                              >
+                                <Download className={cn('size-3', isDownloading && 'animate-bounce')} />
+                                {isUnsafe ? 'Blocked' : isDownloading ? '…' : 'Download'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Email body */}
               <div className="flex-1 overflow-hidden rounded-2xl border border-white/10 bg-white">

@@ -7,17 +7,36 @@ export type SuggestedAction = 'needs_reply' | 'schedule_meeting' | 'review_docum
 export type EmailFilter = 'all' | EmailPriority | 'archived'
 export type ReplyTone = 'professional' | 'friendly' | 'short'
 
+// Date range filter
+export type DateRangeFilter = 'all' | 'today' | 'week' | 'month' | '3months'
+
+// Sort order
+export type SortOrder = 'newest' | 'oldest'
+
 export interface EmailListItem {
   id: string
   subject: string
   from: string
   date: string
   snippet: string
+  hasAttachments?: boolean
+  labelIds?: string[]
+}
+
+export interface AttachmentMeta {
+  attachmentId: string
+  filename: string
+  mimeType: string
+  size: number
+  scanStatus?: 'pending' | 'safe' | 'unsafe' | 'warning' | 'error'
+  scanMessage?: string
+  scanDetails?: string
 }
 
 export interface EmailDetail extends EmailListItem {
   bodyText: string
   htmlBody?: string
+  attachments?: AttachmentMeta[]
 }
 
 export interface EmailAnalysis {

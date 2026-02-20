@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { EmailAnalysis, EmailDetail, EmailFilter, EmailListItem, ReplyTone } from '../types/mail'
+import type { EmailAnalysis, EmailDetail, EmailFilter, EmailListItem, ReplyTone, DateRangeFilter, SortOrder } from '../types/mail'
 
 // NEW: Definition for the internal Shadow Calendar events
 export interface ShadowEvent {
@@ -12,15 +12,17 @@ export interface ShadowEvent {
 
 type MailState = {
   filter: EmailFilter
+  dateRange: DateRangeFilter
+  sortOrder: SortOrder
   emails: Array<EmailListItem>
   selectedId: string | null
 
   detailsById: Record<string, EmailDetail | undefined>
   analysisById: Record<string, EmailAnalysis | undefined>
   replyDraftById: Record<string, { tone: ReplyTone; draft: string } | undefined>
-  
+
   archivedIds: string[]
-  
+
   // NEW: State to store locally saved calendar events
   shadowEvents: ShadowEvent[]
 
@@ -28,6 +30,8 @@ type MailState = {
   error: string | null
 
   setFilter: (filter: EmailFilter) => void
+  setDateRange: (range: DateRangeFilter) => void
+  setSortOrder: (order: SortOrder) => void
   setEmails: (emails: Array<EmailListItem>) => void
   appendEmails: (emails: Array<EmailListItem>) => void
   select: (id: string | null) => void
@@ -37,13 +41,15 @@ type MailState = {
   setSyncing: (syncing: boolean) => void
   setError: (error: string | null) => void
   archiveLocalEmail: (id: string) => void
-  
+
   // NEW: Action to save a suggested event to the local calendar
   addShadowEvent: (event: ShadowEvent) => void
 }
 
 export const useMailStore = create<MailState>((set) => ({
   filter: 'all',
+  dateRange: 'all',
+  sortOrder: 'newest',
   emails: [],
   selectedId: null,
 
@@ -51,7 +57,7 @@ export const useMailStore = create<MailState>((set) => ({
   analysisById: {},
   replyDraftById: {},
   archivedIds: [],
-  
+
   // NEW: Initial state for local events
   shadowEvents: [],
 
@@ -59,8 +65,10 @@ export const useMailStore = create<MailState>((set) => ({
   error: null,
 
   setFilter: (filter) => set({ filter }),
+  setDateRange: (dateRange) => set({ dateRange }),
+  setSortOrder: (sortOrder) => set({ sortOrder }),
   setEmails: (emails) => set({ emails }),
-  
+
   appendEmails: (newEmails) => set((s) => {
     const existingIds = new Set(s.emails.map(e => e.id))
     const uniqueNew = newEmails.filter(e => !existingIds.has(e.id))
@@ -81,9 +89,9 @@ export const useMailStore = create<MailState>((set) => ({
       archivedIds: [...s.archivedIds, id],
       selectedId: s.selectedId === id ? null : s.selectedId,
     })),
-    
+
   // NEW: Implementation to append a new event to the internal list
-  addShadowEvent: (event) => set((s) => ({ 
-    shadowEvents: [...s.shadowEvents, event] 
+  addShadowEvent: (event) => set((s) => ({
+    shadowEvents: [...s.shadowEvents, event]
   })),
 }))
